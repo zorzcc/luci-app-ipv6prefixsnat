@@ -1,0 +1,15 @@
+{
+	"luci-app-ipv6prefixsnat": {
+		"description": "Grant access to IPv6 Prefix SNAT JSON-RPC API",
+		"read": {
+			"ubus": {
+				"ipv6prefixsnat": [ "get_status", "test_runtime", "get_current_rules" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"ipv6prefixsnat": [ "set_config", "apply", "disable", "reload_runtime" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,2 @@
+config ipv6prefixsnat 'config'
+	option enabled '0'

@@ -1,0 +1,60 @@
+#!/bin/sh
+
+APP="/usr/libexec/ipv6prefixsnat.sh"
+LOCK_DIR="/var/run/ipv6prefixsnat/hotplug.lock"
+LOCK_PID_FILE="${LOCK_DIR}/pid"
+
+normalize_bool() {
+	case "$1" in
+		1|true|TRUE|yes|on|enabled) echo 1 ;;
+		*) echo 0 ;;
+	esac
+}
+
+acquire_hotplug_lock() {
+	local pid
+
+	mkdir -p /var/run/ipv6prefixsnat 2>/dev/null
+
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" > "$LOCK_PID_FILE"
+		return 0
+	fi
+
+	pid=""
+	[ -f "$LOCK_PID_FILE" ] && pid="$(cat "$LOCK_PID_FILE" 2>/dev/null)"
+
+	if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+		rm -f "$LOCK_PID_FILE" 2>/dev/null
+		rmdir "$LOCK_DIR" 2>/dev/null || return 1
+
+		if mkdir "$LOCK_DIR" 2>/dev/null; then
+			printf '%s\n' "$$" > "$LOCK_PID_FILE"
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
+release_hotplug_lock() {
+	rm -f "$LOCK_PID_FILE" 2>/dev/null
+	rmdir "$LOCK_DIR" 2>/dev/null
+}
+
+case "$ACTION" in
+	ifup|ifdown|ifupdate)
+		;;
+	*)
+		exit 0
+		;;
+esac
+
+enabled="$(uci -q get ipv6prefixsnat.config.enabled)"
+[ "$(normalize_bool "$enabled")" = "1" ] || exit 0
+
+acquire_hotplug_lock || exit 0
+trap 'release_hotplug_lock' EXIT INT TERM
+
+"$APP" reload >/dev/null 2>&1
+exit 0

@@ -1,0 +1,13 @@
+{
+	"admin/network/ipv6prefixsnat": {
+		"title": "IPv6 Prefix SNAT",
+		"order": 95,
+		"action": {
+			"type": "view",
+			"path": "ipv6prefixsnat/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-ipv6prefixsnat" ]
+		}
+	}
+}

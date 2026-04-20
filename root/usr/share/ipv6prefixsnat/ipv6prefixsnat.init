@@ -1,0 +1,24 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=15
+
+APP="/usr/libexec/ipv6prefixsnat.sh"
+
+start() {
+	"$APP" reload >/dev/null 2>&1
+}
+
+stop() {
+	"$APP" disable >/dev/null 2>&1
+}
+
+reload() {
+	"$APP" reload >/dev/null 2>&1
+}
+
+service_triggers() {
+	procd_add_reload_trigger "ipv6prefixsnat"
+	procd_add_reload_trigger "network"
+	procd_add_reload_trigger "firewall"
+}

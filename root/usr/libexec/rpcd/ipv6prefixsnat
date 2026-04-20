@@ -1,0 +1,265 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+APP="/usr/libexec/ipv6prefixsnat.sh"
+
+normalize_bool() {
+	case "$1" in
+		1|true|TRUE|yes|on|enabled) echo 1 ;;
+		*) echo 0 ;;
+	esac
+}
+
+reply_result() {
+	local ok code reason_code
+
+	ok="$(normalize_bool "$1")"
+	code="$2"
+	reason_code="$3"
+
+	json_init
+	json_add_boolean ok "$ok"
+	json_add_string code "${code:-UNKNOWN}"
+	json_add_string reason_code "${reason_code:-}"
+	json_dump
+}
+
+ensure_config() {
+	uci -q show ipv6prefixsnat.config >/dev/null 2>&1 || {
+		uci -q set ipv6prefixsnat.config=ipv6prefixsnat
+		uci -q set ipv6prefixsnat.config.enabled='0'
+		uci commit ipv6prefixsnat
+	}
+}
+
+apply_rc_to_reason_code() {
+	case "$1" in
+		11) echo "FW4_RELOAD_FAILED_AFTER_REMOVE_WHILE_DISABLED" ;;
+		12) echo "FW4_RELOAD_FAILED_AFTER_REMOVE_OLD_RULES" ;;
+		13) echo "PREVIEW_NOT_READY" ;;
+		18) echo "RULE_FILE_WRITE_FAILED" ;;
+		19) echo "FW4_RELOAD_FAILED_AFTER_RULE_WRITE" ;;
+		20) echo "FW4_AUTO_INCLUDES_DISABLED" ;;
+		22) echo "ANOTHER_APPLY_OR_RELOAD_IN_PROGRESS" ;;
+		*) echo "UNKNOWN_APPLY_ERROR" ;;
+	esac
+}
+
+disable_rc_to_reason_code() {
+	case "$1" in
+		21) echo "FW4_RELOAD_FAILED_AFTER_DISABLE" ;;
+		22) echo "ANOTHER_APPLY_OR_RELOAD_IN_PROGRESS" ;;
+		23) echo "UCI_SET_ENABLED_FAILED" ;;
+		24) echo "UCI_COMMIT_FAILED" ;;
+		*) echo "UNKNOWN_DISABLE_ERROR" ;;
+	esac
+}
+
+get_preview_reason_code() {
+	local enabled_present="${1:-0}" enabled="${2:-}" preview reason_code
+
+	preview="$(
+		OVERRIDE_ENABLED_PRESENT="$enabled_present" \
+		OVERRIDE_ENABLED="$enabled" \
+		"$APP" test_runtime_json 2>/dev/null
+	)"
+	reason_code="$(printf '%s' "$preview" | jsonfilter -e '@.reason_code' 2>/dev/null)"
+
+	printf '%s\n' "$reason_code"
+}
+
+handle_set_config() {
+	local input enabled enabled_type
+
+	ensure_config
+
+	input="$(cat)"
+	[ -n "$input" ] || input='{}'
+
+	json_load "$input" 2>/dev/null || {
+		reply_result 0 "CONFIG_SAVE_FAILED" "INVALID_JSON_INPUT"
+		return
+	}
+
+	json_get_type enabled_type enabled 2>/dev/null
+	if [ -n "$enabled_type" ] && [ "$enabled_type" != "null" ]; then
+		json_get_var enabled enabled
+	else
+		enabled="$(uci -q get ipv6prefixsnat.config.enabled)"
+	fi
+
+	enabled="$(normalize_bool "$enabled")"
+
+	uci -q set ipv6prefixsnat.config.enabled="$enabled" || {
+		reply_result 0 "CONFIG_SAVE_FAILED" "UCI_SET_ENABLED_FAILED"
+		return
+	}
+
+	uci commit ipv6prefixsnat || {
+		reply_result 0 "CONFIG_SAVE_FAILED" "UCI_COMMIT_FAILED"
+		return
+	}
+
+	reply_result 1 "CONFIG_SAVED" ""
+}
+
+handle_apply() {
+	local rc reason_code preview_reason_code
+
+	"$APP" reload
+	rc=$?
+
+	if [ "$rc" -eq 0 ]; then
+		reply_result 1 "RULES_APPLIED" ""
+		return
+	fi
+
+	reason_code="$(apply_rc_to_reason_code "$rc")"
+	preview_reason_code="$(get_preview_reason_code)"
+
+	if [ -n "$preview_reason_code" ] && [ "$preview_reason_code" != "PREVIEW_NOT_READY" ]; then
+		case "$reason_code" in
+			PREVIEW_NOT_READY|FW4_AUTO_INCLUDES_DISABLED)
+				reason_code="$preview_reason_code"
+				;;
+		esac
+	fi
+
+	reply_result 0 "APPLY_FAILED" "$reason_code"
+}
+
+handle_reload_runtime() {
+	local input enabled enabled_type enabled_present
+	local rc reason_code preview_reason_code
+
+	input="$(cat)"
+	[ -n "$input" ] || input='{}'
+
+	json_load "$input" 2>/dev/null || {
+		reply_result 0 "RUNTIME_RELOAD_FAILED" "INVALID_JSON_INPUT"
+		return
+	}
+
+	enabled_present=0
+
+	json_get_type enabled_type enabled 2>/dev/null
+	if [ -n "$enabled_type" ] && [ "$enabled_type" != "null" ]; then
+		enabled_present=1
+		json_get_var enabled enabled
+	fi
+
+	OVERRIDE_ENABLED_PRESENT="$enabled_present" \
+	OVERRIDE_ENABLED="$enabled" \
+	"$APP" reload
+	rc=$?
+
+	if [ "$rc" -eq 0 ]; then
+		reply_result 1 "RUNTIME_RELOADED" ""
+		return
+	fi
+
+	reason_code="$(apply_rc_to_reason_code "$rc")"
+	preview_reason_code="$(get_preview_reason_code "$enabled_present" "$enabled")"
+
+	if [ -n "$preview_reason_code" ] && [ "$preview_reason_code" != "PREVIEW_NOT_READY" ]; then
+		case "$reason_code" in
+			PREVIEW_NOT_READY|FW4_AUTO_INCLUDES_DISABLED)
+				reason_code="$preview_reason_code"
+				;;
+		esac
+	fi
+
+	reply_result 0 "RUNTIME_RELOAD_FAILED" "$reason_code"
+}
+
+handle_disable() {
+	local rc reason_code
+
+	"$APP" disable
+	rc=$?
+
+	if [ "$rc" -eq 0 ]; then
+		reply_result 1 "RULES_DISABLED" ""
+	else
+		reason_code="$(disable_rc_to_reason_code "$rc")"
+		reply_result 0 "DISABLE_FAILED" "$reason_code"
+	fi
+}
+
+handle_test_runtime() {
+	local input enabled enabled_type enabled_present
+
+	input="$(cat)"
+	[ -n "$input" ] || input='{}'
+
+	json_load "$input" 2>/dev/null || {
+		reply_result 0 "RUNTIME_TEST_FAILED" "INVALID_JSON_INPUT"
+		return
+	}
+
+	enabled_present=0
+
+	json_get_type enabled_type enabled 2>/dev/null
+	if [ -n "$enabled_type" ] && [ "$enabled_type" != "null" ]; then
+		enabled_present=1
+		json_get_var enabled enabled
+	fi
+
+	OVERRIDE_ENABLED_PRESENT="$enabled_present" \
+	OVERRIDE_ENABLED="$enabled" \
+	"$APP" test_runtime_json
+}
+
+case "$1" in
+	list)
+		cat <<'EOF'
+{
+	"get_status": {},
+	"get_current_rules": {},
+	"test_runtime": {
+		"enabled": true
+	},
+	"set_config": {
+		"enabled": true
+	},
+	"apply": {},
+	"disable": {},
+	"reload_runtime": {
+		"enabled": true
+	}
+}
+EOF
+		;;
+	call)
+		case "$2" in
+			get_status)
+				"$APP" status_json
+				;;
+			get_current_rules)
+				"$APP" current_rules_json
+				;;
+			test_runtime)
+				handle_test_runtime
+				;;
+			set_config)
+				handle_set_config
+				;;
+			apply)
+				handle_apply
+				;;
+			disable)
+				handle_disable
+				;;
+			reload_runtime)
+				handle_reload_runtime
+				;;
+			*)
+				reply_result 0 "UNKNOWN_METHOD" "METHOD_NOT_FOUND"
+				;;
+		esac
+		;;
+	*)
+		exit 1
+		;;
+esac

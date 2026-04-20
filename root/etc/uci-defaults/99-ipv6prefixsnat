@@ -1,0 +1,57 @@
+#!/bin/sh
+
+INIT_SRC="/usr/share/ipv6prefixsnat/ipv6prefixsnat.init"
+INIT_DST="/etc/init.d/ipv6prefixsnat"
+
+normalize_bool() {
+	case "$1" in
+		1|true|TRUE|yes|on|enabled) echo 1 ;;
+		*) echo 0 ;;
+	esac
+}
+
+ensure_config() {
+	uci -q show ipv6prefixsnat.config >/dev/null 2>&1 || {
+		uci -q set ipv6prefixsnat.config=ipv6prefixsnat
+		uci -q set ipv6prefixsnat.config.enabled='0'
+		uci commit ipv6prefixsnat
+	}
+}
+
+install_init_script() {
+	[ -f "$INIT_SRC" ] || return 1
+
+	mkdir -p /etc/init.d || return 1
+
+	cp -fp "$INIT_SRC" "$INIT_DST" || return 1
+	chmod 0755 "$INIT_DST" || return 1
+
+	/etc/init.d/ipv6prefixsnat enable >/dev/null 2>&1 || true
+	return 0
+}
+
+fix_perms() {
+	chmod 0755 /usr/libexec/ipv6prefixsnat.sh >/dev/null 2>&1 || true
+	chmod 0755 /usr/libexec/rpcd/ipv6prefixsnat >/dev/null 2>&1 || true
+	chmod 0755 /etc/hotplug.d/iface/95-ipv6prefixsnat >/dev/null 2>&1 || true
+	chmod 0755 "$INIT_DST" >/dev/null 2>&1 || true
+}
+
+main() {
+	local enabled
+
+	ensure_config || exit 1
+	install_init_script || exit 1
+	fix_perms
+
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+
+	enabled="$(uci -q get ipv6prefixsnat.config.enabled)"
+	if [ "$(normalize_bool "$enabled")" = "1" ]; then
+		/usr/libexec/ipv6prefixsnat.sh reload >/dev/null 2>&1 || true
+	fi
+
+	exit 0
+}
+
+main "$@"
