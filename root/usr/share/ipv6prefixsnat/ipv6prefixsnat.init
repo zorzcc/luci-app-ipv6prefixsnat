@@ -10,7 +10,7 @@ start() {
 }
 
 stop() {
-	"$APP" disable >/dev/null 2>&1
+	"$APP" stop >/dev/null 2>&1
 }
 
 reload() {

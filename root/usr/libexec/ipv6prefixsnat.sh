@@ -642,8 +642,11 @@ case "$1" in
 	reload|start|restart|"")
 		run_with_lock apply_rules
 		;;
-	disable|stop)
+	disable)
 		run_with_lock set_config_and_disable_rules
+		;;
+	stop)
+		run_with_lock disable_rules
 		;;
 	status_json)
 		status_json
@@ -667,7 +670,7 @@ case "$1" in
 		echo "rule_preview=$combined_rule_preview"
 		;;
 	*)
-		echo "Usage: $0 {reload|disable|status|status_json|test_runtime_json|current_rules_json}"
+		echo "Usage: $0 {reload|disable|stop|status|status_json|test_runtime_json|current_rules_json}"
 		exit 1
 		;;
 esac
